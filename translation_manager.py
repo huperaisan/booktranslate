@@ -1,8 +1,9 @@
+import asyncio
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 from openai import OpenAI
-from .state_manager import StateManager
-from .epub_processor import EPubProcessor
+from state_manager import StateManager
+from epub_processor import EPubProcessor
 
 class TranslationManager:
     def __init__(self, client: OpenAI, state_manager: StateManager, epub_processor: EPubProcessor):
@@ -38,7 +39,21 @@ class TranslationManager:
 
     def _get_system_prompt(self, from_lang: str, to_lang: str) -> str:
         """Get system prompt for translation"""
-        # ... existing system prompt code ...
+        return f"""You are a {from_lang}-to-{to_lang} translator.
+
+CRITICAL: You must preserve ALL HTML/XML structure exactly as provided:
+- Never remove or modify HTML/XML tags
+- Keep ALL class names and IDs unchanged
+- Preserve ALL style attributes completely 
+- Maintain ALL paragraph (<p>) and div tags with their full attributes
+- Copy opening and closing tags exactly as they appear
+- Do not merge or split HTML/XML elements
+- Do not add new HTML/XML formatting
+
+Translate ONLY the text that is in {from_lang} between tags.
+Leave in place WITHOUT translating or modifying in any way:
+- Greek/Latin words or text, including block quotations
+- HTML/XML attributes and values"""
 
     async def process_batch(self, chunks: List[Tuple[str, str]], from_lang: str, to_lang: str, model: str) -> Dict[str, str]:
         """Process chunks in batches with parallel execution"""

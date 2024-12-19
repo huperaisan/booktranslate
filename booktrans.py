@@ -11,6 +11,7 @@ from pathlib import Path
 import shutil
 import signal
 import time  # Add this import at the top with other imports
+import asyncio
 
 # Add UTC constant
 UTC = timezone.utc
@@ -938,21 +939,53 @@ def select_resumable_job(input_epub_path, from_lang, to_lang, model, mode):
             pass
         print("Invalid choice, please try again [select_resumable_job]")
 
-from .state_manager import StateManager
-from .translation_manager import TranslationManager
-from .epub_processor import EPubProcessor
+from state_manager import StateManager
+from translation_manager import TranslationManager
+from epub_processor import EPubProcessor
 
-def translate(client, input_epub_path, output_epub_path, from_lang='DE', to_lang='EN', 
-              mode=None, model='gpt-4o-mini', fast=False, resume_job_id=None, 
-              debug=False):
-    # Create managers
-    job_id = resume_job_id or create_job_id(input_epub_path, from_lang, to_lang, model)
-    state_manager = StateManager(job_id, ensure_temp_dir())
-    epub_processor = EPubProcessor(Path(input_epub_path), Path(output_epub_path))
-    translation_manager = TranslationManager(client, state_manager, epub_processor)
+async def translate(client, input_epub_path, output_epub_path, from_lang='DE', to_lang='EN', 
+                   mode=None, model='gpt-4o-mini', fast=False, resume_job_id=None, 
+                   debug=False):
+    """Main translation function using the manager classes"""
+    try:
+        # Create managers
+        job_id = resume_job_id or create_job_id(input_epub_path, from_lang, to_lang, model)
+        state_manager = StateManager(job_id, ensure_temp_dir())
+        epub_processor = EPubProcessor(Path(input_epub_path), Path(output_epub_path))
+        translation_manager = TranslationManager(client, state_manager, epub_processor)
 
-    # Rest of the translation logic using the new managers
-    # ...existing code modified to use the new classes...
+        # Try to load existing state
+        state = state_manager.load_state()
+        if state:
+            chunks = state['chunks']
+            chapter_map = state['chapter_map']
+            translations = state.get('translations', {})
+            print(f"Resumed with {len(translations)}/{len(chunks)} translations")
+        else:
+            # Extract new chunks
+            chunks, chapter_map = epub_processor.extract_chunks()
+            translations = {}
+            state_manager.save_chunks(chunks, chapter_map)
+            
+        if mode == 'batch':
+            translations = await translation_manager.process_batch(chunks, from_lang, to_lang, model)
+        elif mode in ['fast', 'resume']:
+            untranslated = [(cid, text) for cid, text in chunks if cid not in translations]
+            for chunk_id, text in untranslated:
+                result = await translation_manager.process_chunk(chunk_id, text, from_lang, to_lang, model)
+                if result:
+                    translations[chunk_id] = result
+                    state_manager.save_translations(translations)
+        
+        if translations:
+            epub_processor.reassemble(translations, chapter_map)
+            print(f"Translated EPUB saved to {output_epub_path}")
+        
+        return True
+            
+    except Exception as e:
+        print(f"Error during translation: {e}")
+        return False
 
 def find_resumable_jobs(input_epub_path, from_lang, to_lang, model):
     """Find all resumable jobs for the given parameters without requiring job_state.json"""
@@ -1108,11 +1141,11 @@ if __name__ == "__main__":
         client = OpenAI(api_key=config['openai']['api_key'])
         
         # Call translate - remove test_translations_file parameter
-        translate(client, args.input, output_path, args.from_lang, args.to_lang, 
+        asyncio.run(translate(client, args.input, output_path, args.from_lang, args.to_lang, 
                  mode=args.mode, model=args.model, 
                  fast=(args.mode not in ['batch', 'savebatch']),
                  resume_job_id=job_id, 
-                 debug=args.debug)  # Remove inline_css argument
+                 debug=args.debug))  # Remove inline_css argument
     except KeyboardInterrupt:
         print("\nTranslation interrupted. Use --mode resume to continue later. [main]")
         sys.exit(1)
